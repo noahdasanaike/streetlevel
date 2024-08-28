@@ -15,7 +15,7 @@ from .parse import parse_coverage_tile_response, parse_panorama_id_response, \
     parse_panorama_radius_response
 from .util import is_third_party_panoid
 from ..geo import wgs84_to_tile_coord
-from ..util import get_equirectangular_panorama, get_equirectangular_panorama_async
+from ..util import get_equirectangular_panorama_async
 
 def find_panorama(lat: float, lon: float, radius: int = 50, locale: str = "en",
                   search_third_party: bool = False, session: Session = None) -> Optional[StreetViewPanorama]:
@@ -124,7 +124,7 @@ async def download_panorama_async(pano: StreetViewPanorama, path: str, session: 
     else:
         print(f"Failed to download panorama {pano.id}")
 
-def get_panorama(pano: StreetViewPanorama, zoom: int = 5, session: Optional[Session] = None) -> Optional[Image.Image]:
+def get_panorama(pano: StreetViewPanorama, zoom: int = 5, session: Optional[requests.Session] = None) -> Optional[Image.Image]:
     """
     Downloads a panorama and returns it as PIL image.
 
@@ -134,11 +134,11 @@ def get_panorama(pano: StreetViewPanorama, zoom: int = 5, session: Optional[Sess
     :return: A PIL image containing the panorama, or None if no valid zoom level is found.
     """
     if pano.image_sizes:
-        return _get_panorama_with_sizes(pano, zoom)
+        return _get_panorama_with_sizes(pano, zoom, session)
     else:
         return _get_panorama_without_sizes(pano, zoom, session)
 
-def _get_panorama_with_sizes(pano: StreetViewPanorama, zoom: int) -> Optional[Image.Image]:
+def _get_panorama_with_sizes(pano: StreetViewPanorama, zoom: int, session: Optional[requests.Session]) -> Optional[Image.Image]:
     zoom = max(0, min(zoom, len(pano.image_sizes) - 1))
     img_size = pano.image_sizes[zoom]
     tiles = _generate_tile_list(pano.id, zoom, (img_size.x, img_size.y))
@@ -148,40 +148,28 @@ def _get_panorama_with_sizes(pano: StreetViewPanorama, zoom: int) -> Optional[Im
         print(f"Failed to download panorama {pano.id} at zoom level {zoom}")
         return None
 
-def _get_panorama_without_sizes(pano: StreetViewPanorama, zoom: int, session: Optional[Session]) -> Optional[Image.Image]:
+def _get_panorama_without_sizes(pano: StreetViewPanorama, zoom: int, session: Optional[requests.Session]) -> Optional[Image.Image]:
     ZOOM_LEVELS = range(zoom, -1, -1)  # From requested zoom to lowest (0)
     TILE_SIZE = Size(512, 512)  # Assuming a fixed tile size
 
     for test_zoom in ZOOM_LEVELS:
         img_size = _calculate_image_size(test_zoom)
         tiles = _generate_tile_list(pano.id, test_zoom, img_size)
-        
-        try:
+
+        tile_images = _download_tiles(tiles, session)
+        if tile_images:
             return get_equirectangular_panorama(img_size[0], img_size[1], TILE_SIZE, tiles)
-        except UnidentifiedImageError:
-            continue
-    
+
     print(f"Failed to download panorama {pano.id} at any zoom level")
     return None
 
-def _calculate_image_size(zoom: int) -> tuple:
+def _calculate_image_size(zoom: int) -> Tuple[int, int]:
     """Calculate the image size based on zoom level."""
     base_width, base_height = 416, 208  # Size at zoom level 0
     multiplier = 2 ** zoom
     return (base_width * multiplier, base_height * multiplier)
 
-def _generate_tile_url(panoid: str, zoom: int, x: int, y: int) -> str:
-    """Generate the URL for a specific tile."""
-    if _is_third_party_panoid(panoid):
-        return f"https://lh3.ggpht.com/p/{panoid}=x{x}-y{y}-z{zoom}"
-    else:
-        return f"https://cbk0.google.com/cbk?output=tile&panoid={panoid}&zoom={zoom}&x={x}&y={y}"
-
-def _is_third_party_panoid(panoid: str) -> bool:
-    """Check if the panoid is for a third-party panorama."""
-    return not panoid.startswith("F:") and not panoid.startswith("C:")
-
-def _generate_tile_list(panoid: str, zoom: int, img_size: tuple) -> List[Tile]:
+def _generate_tile_list(panoid: str, zoom: int, img_size: Tuple[int, int]) -> List[Tile]:
     """Generate a list of tiles for the panorama."""
     tile_width, tile_height = 512, 512  # Assuming fixed tile size
     cols = -(-img_size[0] // tile_width)  # Ceiling division
@@ -192,20 +180,50 @@ def _generate_tile_list(panoid: str, zoom: int, img_size: tuple) -> List[Tile]:
         for y in range(rows):
             url = _generate_tile_url(panoid, zoom, x, y)
             tiles.append(Tile(x, y, url))
-    
+
     return tiles
 
-def _download_tiles(tiles: List[Tile], session: Optional[Session]) -> dict:
+def _generate_tile_url(panoid: str, zoom: int, x: int, y: int) -> str:
+    """Generate the URL for a specific tile."""
+    if is_third_party_panoid(panoid):
+        return f"https://lh3.ggpht.com/p/{panoid}=x{x}-y{y}-z{zoom}"
+    else:
+        return f"https://cbk0.google.com/cbk?output=tile&panoid={panoid}&zoom={zoom}&x={x}&y={y}"
+
+def _download_tiles(tiles: List[Tile], session: Optional[requests.Session]) -> Optional[dict]:
     """Download all tiles and return them as a dictionary."""
     tile_images = {}
     for tile in tiles:
-        response = session.get(tile.url) if session else requests.get(tile.url)
-        if response.status_code == 200:
-            tile_images[(tile.x, tile.y)] = response.content
-        else:
+        try:
+            response = session.get(tile.url) if session else requests.get(tile.url)
+            response.raise_for_status()
+            tile_images[(tile.x, tile.y)] = Image.open(BytesIO(response.content))
+        except (requests.RequestException, UnidentifiedImageError):
             print(f"Failed to download tile at {tile.url}")
-            tile_images[(tile.x, tile.y)] = None
+            return None
     return tile_images
+
+def get_equirectangular_panorama(width: int, height: int, tile_size: Size, tiles: List[Tile]) -> Image.Image:
+    """
+    Downloads and stitches a tiled equirectangular panorama.
+
+    :param width: Width of the panorama in pixels.
+    :param height: Height of the panorama in pixels.
+    :param tile_size: Size of one tile.
+    :param tiles: The tiles this panorama is made of.
+    :return: The stitched panorama as PIL image.
+    """
+    panorama = Image.new('RGB', (width, height))
+    tile_images = _download_tiles(tiles, None)  # We're not using a session here
+    
+    if tile_images is None:
+        raise UnidentifiedImageError("Failed to download one or more tiles")
+
+    for tile in tiles:
+        tile_image = tile_images[(tile.x, tile.y)]
+        panorama.paste(tile_image, (tile.x * tile_size.x, tile.y * tile_size.y))
+
+    return panorama
 
 async def get_panorama_async(pano: StreetViewPanorama, session: ClientSession, zoom: int = 5) -> Optional[Image.Image]:
     # Implementation for async version...
