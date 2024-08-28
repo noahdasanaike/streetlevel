@@ -167,29 +167,44 @@ def _calculate_image_size(zoom: int) -> tuple:
     multiplier = 2 ** zoom
     return (base_width * multiplier, base_height * multiplier)
 
-def get_panorama(pano: StreetViewPanorama, session: Session = None, max_zoom: int = 5) -> Optional[Image.Image]:
+def get_panorama(pano: StreetViewPanorama, zoom: int = 5, session: Optional[requests.Session] = None) -> Optional[Image.Image]:
     """
-    Downloads a panorama at the highest available zoom level and returns it as PIL image.
+    Downloads a panorama and returns it as PIL image.
 
     :param pano: The panorama to download.
+    :param zoom: (optional) Image size; 0 is lowest, 5 is highest. Defaults to 5.
     :param session: (optional) A requests session.
-    :param max_zoom: (optional) The maximum zoom level to try. Defaults to 5.
     :return: A PIL image containing the panorama, or None if no valid zoom level is found.
     """
+    if pano.image_sizes:
+        return _get_panorama_with_sizes(pano, zoom)
+    else:
+        return _get_panorama_without_sizes(pano, zoom, session)
+
+def _get_panorama_with_sizes(pano: StreetViewPanorama, zoom: int) -> Image.Image:
+    zoom = max(0, min(zoom, len(pano.image_sizes) - 1))
+    img_size = pano.image_sizes[zoom]
+    tiles = _generate_tile_list(pano.id, zoom, (img_size.x, img_size.y))
+    return get_equirectangular_panorama(img_size.x, img_size.y, pano.tile_size, tiles)
+
+def _get_panorama_without_sizes(pano: StreetViewPanorama, zoom: int, session: Optional[requests.Session]) -> Optional[Image.Image]:
+    ZOOM_LEVELS = range(5, -1, -1)  # From highest (5) to lowest (0)
     TILE_SIZE = (512, 512)  # Assuming a fixed tile size
 
-    if pano.image_sizes:
-        # Use the highest available zoom level from pano.image_sizes
-        zoom = min(max_zoom, len(pano.image_sizes) - 1)
-        img_size = (pano.image_sizes[zoom].x, pano.image_sizes[zoom].y)
-    else:
-        # Manually check for the highest available zoom level
-        zoom, img_size = _find_highest_zoom(pano.id, max_zoom, session)
-        if zoom is None:
-            return None  # No valid zoom level found
-
-    tiles = _generate_tile_list(pano.id, zoom, img_size)
-    return get_equirectangular_panorama(img_size[0], img_size[1], TILE_SIZE, tiles)
+    for test_zoom in ZOOM_LEVELS:
+        if test_zoom <= zoom:
+            # Test if the zoom level exists by trying to download a tile
+            test_tile_url = _generate_tile_url(pano.id, test_zoom, 0, 0)
+            response = session.get(test_tile_url) if session else requests.get(test_tile_url)
+            
+            if response.status_code == 200:
+                # This zoom level exists, so we'll use it
+                img_size = _calculate_image_size(test_zoom)
+                tiles = _generate_tile_list(pano.id, test_zoom, img_size)
+                return get_equirectangular_panorama(img_size[0], img_size[1], TILE_SIZE, tiles)
+    
+    # If we've reached this point, no valid zoom level was found
+    return None
 
 async def get_panorama_async(pano: StreetViewPanorama, session: ClientSession, zoom: int = 5) -> Image.Image:
     zoom = _validate_get_panorama_params(pano, zoom)
