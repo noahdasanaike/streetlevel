@@ -5,7 +5,7 @@ import math
 from PIL import Image, UnidentifiedImageError
 from requests import Session
 import requests
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from io import BytesIO
 from ..dataclasses import Tile, Size
 
