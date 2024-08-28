@@ -102,12 +102,8 @@ def download_panorama(pano: StreetViewPanorama, path: str, zoom: int = 5, pil_ar
 
     :param pano: The panorama to download.
     :param path: Output path.
-    :param zoom: *(optional)* Image size; 0 is lowest, 5 is highest. The dimensions of a zoom level of a
-        specific panorama depend on the camera used. If the requested zoom level does not exist,
-        the highest available level will be downloaded. Defaults to 5.
-    :param pil_args: *(optional)* Additional arguments for PIL's
-        `Image.save <https://pillow.readthedocs.io/en/stable/reference/Image.html#PIL.Image.Image.save>`_
-        method, e.g. ``{"quality":100}``. Defaults to ``{}``.
+    :param zoom: (optional) Image size; 0 is lowest, 5 is highest. Defaults to 5.
+    :param pil_args: (optional) Additional arguments for PIL's Image.save method. Defaults to {}.
     """
     if pil_args is None:
         pil_args = {}
@@ -132,38 +128,37 @@ def get_panorama(pano: StreetViewPanorama, zoom: int = 5, session: Optional[Sess
     Downloads a panorama and returns it as PIL image.
 
     :param pano: The panorama to download.
-    :param zoom: *(optional)* Image size; 0 is lowest, 5 is highest. The dimensions of a zoom level of a
-        specific panorama depend on the camera used. If the requested zoom level does not exist,
-        the highest available level will be downloaded. Defaults to 5.
-    :param session: *(optional)* A requests session.
-    :return: A PIL image containing the panorama, or None if download fails.
+    :param zoom: (optional) Image size; 0 is lowest, 5 is highest. Defaults to 5.
+    :param session: (optional) A requests session.
+    :return: A PIL image containing the panorama, or None if no valid zoom level is found.
     """
     if pano.image_sizes:
-        return _get_panorama_with_sizes(pano, zoom, session)
+        return _get_panorama_with_sizes(pano, zoom)
     else:
         return _get_panorama_without_sizes(pano, zoom, session)
 
-def _get_panorama_with_sizes(pano: StreetViewPanorama, zoom: int, session: Optional[Session]) -> Optional[Image.Image]:
+def _get_panorama_with_sizes(pano: StreetViewPanorama, zoom: int) -> Optional[Image.Image]:
     zoom = max(0, min(zoom, len(pano.image_sizes) - 1))
     img_size = pano.image_sizes[zoom]
     tiles = _generate_tile_list(pano.id, zoom, (img_size.x, img_size.y))
-    tile_images = _download_tiles(tiles, session)
-    if all(tile_images.values()):
-        return get_equirectangular_panorama(img_size.x, img_size.y, pano.tile_size, tiles, tile_images)
-    else:
-        print(f"Failed to download all tiles for panorama {pano.id}")
+    try:
+        return get_equirectangular_panorama(img_size.x, img_size.y, pano.tile_size, tiles)
+    except UnidentifiedImageError:
+        print(f"Failed to download panorama {pano.id} at zoom level {zoom}")
         return None
 
 def _get_panorama_without_sizes(pano: StreetViewPanorama, zoom: int, session: Optional[Session]) -> Optional[Image.Image]:
     ZOOM_LEVELS = range(zoom, -1, -1)  # From requested zoom to lowest (0)
-    TILE_SIZE = (512, 512)  # Assuming a fixed tile size
+    TILE_SIZE = Size(512, 512)  # Assuming a fixed tile size
 
     for test_zoom in ZOOM_LEVELS:
         img_size = _calculate_image_size(test_zoom)
         tiles = _generate_tile_list(pano.id, test_zoom, img_size)
-        tile_images = _download_tiles(tiles, session)
-        if all(tile_images.values()):
-            return get_equirectangular_panorama(img_size[0], img_size[1], TILE_SIZE, tiles, tile_images)
+        
+        try:
+            return get_equirectangular_panorama(img_size[0], img_size[1], TILE_SIZE, tiles)
+        except UnidentifiedImageError:
+            continue
     
     print(f"Failed to download panorama {pano.id} at any zoom level")
     return None
@@ -176,10 +171,14 @@ def _calculate_image_size(zoom: int) -> tuple:
 
 def _generate_tile_url(panoid: str, zoom: int, x: int, y: int) -> str:
     """Generate the URL for a specific tile."""
-    if is_third_party_panoid(panoid):
+    if _is_third_party_panoid(panoid):
         return f"https://lh3.ggpht.com/p/{panoid}=x{x}-y{y}-z{zoom}"
     else:
         return f"https://cbk0.google.com/cbk?output=tile&panoid={panoid}&zoom={zoom}&x={x}&y={y}"
+
+def _is_third_party_panoid(panoid: str) -> bool:
+    """Check if the panoid is for a third-party panorama."""
+    return not panoid.startswith("F:") and not panoid.startswith("C:")
 
 def _generate_tile_list(panoid: str, zoom: int, img_size: tuple) -> List[Tile]:
     """Generate a list of tiles for the panorama."""
