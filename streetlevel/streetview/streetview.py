@@ -1,18 +1,20 @@
 from aiohttp import ClientSession
 import itertools
 import math
-from PIL import Image
-import requests
+
+from PIL import Image, UnidentifiedImageError
 from requests import Session
+import requests
 from typing import List, Optional
 from io import BytesIO
+from .util import get_equirectangular_panorama
+from ..dataclasses import Tile, Size
 
 from . import api
 from .panorama import StreetViewPanorama
 from .parse import parse_coverage_tile_response, parse_panorama_id_response, \
     parse_panorama_radius_response
 from .util import is_third_party_panoid
-from ..dataclasses import Tile
 from ..geo import wgs84_to_tile_coord
 from ..util import get_equirectangular_panorama, get_equirectangular_panorama_async
 
