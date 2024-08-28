@@ -2,7 +2,7 @@ from aiohttp import ClientSession
 import itertools
 import math
 from PIL import Image
-from requests import Session
+import requests
 from typing import List, Optional
 
 from . import api
