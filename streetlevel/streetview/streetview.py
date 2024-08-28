@@ -7,7 +7,6 @@ from requests import Session
 import requests
 from typing import List, Optional
 from io import BytesIO
-from .util import get_equirectangular_panorama
 from ..dataclasses import Tile, Size
 
 from . import api
